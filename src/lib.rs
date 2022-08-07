@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ops::AddAssign,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -16,12 +17,14 @@ pub fn global() -> &'static Registry {
 }
 
 pub fn summary() {
-    global().drain_raw_merged().into_iter().for_each(|(s, v)| {
+    global().stats().into_iter().for_each(|(s, q)| {
         println!(
-            "{s:20}: {avg:10?} {tot:12?} [{n:6}]",
-            avg = v.iter().sum::<Duration>() / v.len() as u32,
-            tot = v.iter().sum::<Duration>(),
-            n = v.len()
+            "{s:20}: {mean:10?}({std:10?}) {tot:12?} [{n:6}]({copies:2})",
+            mean = q.mean,
+            std = Duration::from_secs_f32(q.var.as_secs_f32().sqrt()),
+            tot = q.sum,
+            n = q.count,
+            copies = q.copies,
         )
     })
 }
@@ -39,60 +42,185 @@ impl Registry {
 
     pub fn clear(&self) {
         self.trackers.lock().iter().for_each(|t| {
-            t.buf.0.lock().drain(..);
+            let mut g = t.buf.0.lock();
+            g.consolidate();
+            g.vec.drain(..);
         });
     }
 
-    pub fn drain_raw(&self) -> Vec<(String, Vec<Duration>)> {
+    pub fn drain_raw(&self) -> Vec<(String, Vec<Record>)> {
         self.trackers
             .lock()
             .iter()
             .map(|t| {
-                (
-                    t.name.into(),
-                    std::mem::replace(t.buf.0.lock().as_mut(), Vec::new()),
-                )
+                let mut g = t.buf.0.lock();
+                g.consolidate();
+                (t.name.into(), std::mem::replace(&mut g.vec, Vec::new()))
             })
             .collect()
     }
 
-    pub fn drain_raw_merged(&self) -> HashMap<String, Vec<Duration>> {
+    pub fn drain_raw_merged(&self) -> HashMap<String, Vec<Record>> {
         self.trackers
             .lock()
             .iter()
             .map(|t| (t.name.into(), t.buf.0.lock()))
-            .fold(HashMap::new(), |mut h, mut x| {
-                h.entry(x.0)
+            .fold(HashMap::new(), |mut h, (name, mut g)| {
+                g.consolidate();
+                h.entry(name)
                     .or_default()
-                    .extend(std::mem::replace(x.1.as_mut(), Vec::new()).drain(..));
+                    .extend(std::mem::replace(&mut g.vec, Vec::new()).drain(..));
                 h
             })
     }
 
-    pub fn get_cnt_avg(&self) -> Vec<(String, usize, Duration)> {
-        self.trackers
+    pub fn stats(&self) -> HashMap<String, Stats> {
+        #[derive(Default)]
+        struct Part {
+            copies: usize,
+            count: usize,
+            sum: Duration,
+            sqsum: f64,
+        }
+
+        impl AddAssign<Part> for Part {
+            fn add_assign(&mut self, rhs: Part) {
+                self.copies += rhs.copies;
+                self.count += rhs.count;
+                self.sum += rhs.sum;
+                self.sqsum += rhs.sqsum;
+            }
+        }
+
+        let map: HashMap<String, Part> = self
+            .trackers
             .lock()
             .iter()
-            .map(|t| {
-                let v = t.buf.0.lock();
-                let len = v.len();
-                (t.name.into(), len, v.iter().sum::<Duration>() / len as u32)
+            .map(|t| (t.name.into(), t.buf.0.lock()))
+            .fold(HashMap::new(), |mut h, (name, mut buf)| {
+                buf.consolidate();
+                let mut part = buf.vec.iter().fold(Part::default(), |mut part, r| {
+                    part.count += r.count as usize;
+                    part.sum += Duration::from_nanos(r.ns);
+                    part
+                });
+                part.copies = 1;
+
+                *h.entry(name).or_default() += part;
+                h
+            });
+
+        let map = self
+            .trackers
+            .lock()
+            .iter()
+            .map(|t| (t.name.into(), t.buf.0.lock()))
+            .fold(map, |mut h, (name, buf)| {
+                let mean = h
+                    .get(name)
+                    .map(|p| p.sum / p.count as u32)
+                    .unwrap()
+                    .as_secs_f64();
+                let sqsum = buf.vec.iter().fold(0., |acc, r| {
+                    let s = r.ns as f64 / 1_000_000_000.;
+                    let c = r.count as f64;
+                    let d = (s / c) - mean;
+                    
+                    acc + (d * d * c)
+                });
+
+                h.get_mut(name).unwrap().sqsum += sqsum;
+                h
+            });
+
+        map.into_iter()
+            .map(|(name, part)| {
+                (
+                    name,
+                    Stats {
+                        copies: part.copies,
+                        count: part.count,
+                        sum: part.sum,
+                        mean: part.sum / part.count as u32,
+                        var: Duration::from_secs_f64(part.sqsum / part.count as f64),
+                    },
+                )
             })
             .collect()
     }
 }
 
-type Record = Duration;
+#[derive(Default)]
+pub struct Record {
+    pub ns: u64,
+    pub count: u32,
+}
+
+impl Record {
+    #[inline]
+    pub fn avg(&self) -> Duration {
+        Duration::from_nanos(self.ns / self.count as u64)
+    }
+}
 
 #[derive(Clone)]
-struct RecordBuf(Arc<Mutex<Vec<Record>>>);
+struct RecordBuf(Arc<Mutex<RecordBufInner>>);
+struct RecordBufInner {
+    cur: Record,
+    vec: Vec<Record>,
+}
+
+impl RecordBufInner {
+    #[cfg(feature = "perforation")]
+    fn update(&mut self, d: Duration) {
+        let q = self.vec.len() as u32 / 1024;
+        match q {
+            0 => self.vec.push(Record {
+                ns: d.as_nanos() as u64,
+                count: 1,
+            }),
+            q => {
+                self.cur.count += 1;
+                self.cur.ns += d.as_nanos() as u64;
+                if self.cur.count == 1 << q {
+                    self.consolidate();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "perforation"))]
+    fn update(&mut self, d: Duration) {
+        self.vec.push(Record {
+            ns: d.as_nanos() as u64,
+            count: 1,
+        });
+    }
+
+    fn consolidate(&mut self) {
+        if self.cur.count > 0 {
+            self.vec
+                .push(std::mem::replace(&mut self.cur, Default::default()))
+        }
+    }
+}
+
+impl RecordBuf {
+    #[inline]
+    fn record(&self, d: Duration) {
+        // Lock is never contended except on consultation of results
+        // so despite the lock, this is cheap and non blocking most of the times
+        self.0.lock().update(d);
+    }
+}
 
 impl Default for RecordBuf {
     #[inline]
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(Vec::with_capacity(
-            (4 << 10) / std::mem::size_of::<Record>(),
-        ))))
+        Self(Arc::new(Mutex::new(RecordBufInner {
+            cur: Default::default(),
+            vec: Vec::with_capacity((4 << 10) / std::mem::size_of::<Record>()),
+        })))
     }
 }
 
@@ -141,10 +269,8 @@ impl Track {
     }
 
     #[inline]
-    pub fn record(&self, r: Record) {
-        // Lock is never contended except on consultation of results
-        // so despite the lock, this is cheap and non blocking most of the times
-        self.buf.0.lock().push(r);
+    pub fn record(&self, r: Duration) {
+        self.buf.record(r);
     }
 }
 
@@ -164,6 +290,14 @@ impl Drop for Span<'_> {
     fn drop(&mut self) {
         self.owner.record(self.start.elapsed());
     }
+}
+
+pub struct Stats {
+    pub copies: usize,
+    pub count: usize,
+    pub sum: Duration,
+    pub mean: Duration,
+    pub var: Duration,
 }
 
 #[cfg(not(feature = "disable"))]
