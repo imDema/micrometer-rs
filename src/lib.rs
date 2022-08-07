@@ -1,50 +1,70 @@
 use std::{
+    collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant}, collections::HashMap,
+    time::{Duration, Instant},
 };
 
-pub use once_cell::sync::Lazy;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-pub use thread_local::ThreadLocal;
+use thread_local::ThreadLocal;
 
 static GLOBAL_REGISTRY: Lazy<Registry> = Lazy::new(|| Registry::default());
+
+#[inline]
+pub fn global() -> &'static Registry {
+    &GLOBAL_REGISTRY
+}
+
+pub fn summary() {
+    global().drain_raw_merged().into_iter().for_each(|(s, v)| {
+        println!(
+            "{s:20}: {avg:10?} {tot:12?} [{n:6}]",
+            avg = v.iter().sum::<Duration>() / v.len() as u32,
+            tot = v.iter().sum::<Duration>(),
+            n = v.len()
+        )
+    })
+}
 
 #[derive(Default)]
 pub struct Registry {
     trackers: Mutex<Vec<Track>>,
 }
 
-pub fn global() -> &'static Registry {
-    &GLOBAL_REGISTRY
-}
-
 impl Registry {
+    #[inline]
     pub fn register(&self, t: &Track) {
         self.trackers.lock().push(t.clone());
     }
 
     pub fn clear(&self) {
-        self.trackers
-            .lock()
-            .iter()
-            .for_each(|t| { t.buf.0.lock().drain(..); });
+        self.trackers.lock().iter().for_each(|t| {
+            t.buf.0.lock().drain(..);
+        });
     }
 
-    pub fn get_raw(&self) -> Vec<(String, Vec<Duration>)> {
+    pub fn drain_raw(&self) -> Vec<(String, Vec<Duration>)> {
         self.trackers
             .lock()
             .iter()
-            .map(|t| (t.name.into(), t.buf.0.lock().clone()))
+            .map(|t| {
+                (
+                    t.name.into(),
+                    std::mem::replace(t.buf.0.lock().as_mut(), Vec::new()),
+                )
+            })
             .collect()
     }
 
-    pub fn get_raw_merged(&self) -> HashMap<String, Vec<Duration>> {
+    pub fn drain_raw_merged(&self) -> HashMap<String, Vec<Duration>> {
         self.trackers
             .lock()
             .iter()
-            .map(|t| (t.name.into(), t.buf.0.lock().clone()))
-            .fold(HashMap::new(), |mut h, x| {
-                h.entry(x.0).or_default().extend(x.1);
+            .map(|t| (t.name.into(), t.buf.0.lock()))
+            .fold(HashMap::new(), |mut h, mut x| {
+                h.entry(x.0)
+                    .or_default()
+                    .extend(std::mem::replace(x.1.as_mut(), Vec::new()).drain(..));
                 h
             })
     }
@@ -53,10 +73,10 @@ impl Registry {
         self.trackers
             .lock()
             .iter()
-            .map(|t| (t.name.into(), t.buf.0.lock().clone()))
-            .map(|(n, v)|  {
+            .map(|t| {
+                let v = t.buf.0.lock();
                 let len = v.len();
-                (n, len, v.into_iter().sum::<Duration>() / len as u32)
+                (t.name.into(), len, v.iter().sum::<Duration>() / len as u32)
             })
             .collect()
     }
@@ -68,8 +88,25 @@ type Record = Duration;
 struct RecordBuf(Arc<Mutex<Vec<Record>>>);
 
 impl Default for RecordBuf {
+    #[inline]
     fn default() -> Self {
-        Self(Default::default())
+        Self(Arc::new(Mutex::new(Vec::with_capacity(
+            (4 << 10) / std::mem::size_of::<Record>(),
+        ))))
+    }
+}
+
+pub struct TrackPoint(Lazy<ThreadLocal<Track>>);
+
+impl TrackPoint {
+    #[inline]
+    pub const fn new() -> Self {
+        Self(Lazy::new(|| ThreadLocal::new()))
+    }
+
+    #[inline]
+    pub fn get_or_init(&self, name: &'static str) -> &Track {
+        self.0.get_or(|| Track::new(name))
     }
 }
 
@@ -80,10 +117,30 @@ pub struct Track {
 }
 
 impl Track {
+    #[inline]
+    pub fn new(name: &'static str) -> Self {
+        let buf = RecordBuf::default();
+        let t = Self { buf, name };
+
+        global().register(&t);
+
+        t
+    }
+
+    // Get a span guard, measures time from its creation to when it's dropped
+    #[cfg(not(feature = "disable"))]
+    #[inline]
     pub fn span(&self) -> Span<'_> {
         Span::new(self)
     }
 
+    #[inline]
+    #[cfg(feature = "disable")]
+    pub fn span(&self) -> () {
+        ()
+    }
+
+    #[inline]
     pub fn record(&self, r: Record) {
         // Lock is never contended except on consultation of results
         // so despite the lock, this is cheap and non blocking most of the times
@@ -109,6 +166,7 @@ impl Drop for Span<'_> {
     }
 }
 
+#[cfg(not(feature = "disable"))]
 #[macro_export]
 macro_rules! span {
     ($span:ident) => {
@@ -117,35 +175,25 @@ macro_rules! span {
     ($span:ident, $name:expr) => {
         #[allow(unused)]
         let $span = {
-            use $crate::{Lazy, ThreadLocal, Track};
+            use $crate::TrackPoint;
 
-            static TRACK_POINT: Lazy<ThreadLocal<Track>> = Lazy::new(|| ThreadLocal::new());
-            // static SERIAL: AtomicUsize = AtomicUsize::new(0);
+            static TRACK_POINT: TrackPoint = TrackPoint::new();
 
-            let t = TRACK_POINT.get_or(|| {
-                let buf = RecordBuf::default();
-                let name = $name;
-                let t = Track { buf, name };
-
-                global().register(&t);
-
-                t
-            });
-
-            t.span()
+            TRACK_POINT.get_or_init($name).span()
         };
     };
 }
 
-pub fn summary() {
-    global()
-        .get_raw_merged()
-        .into_iter()
-        .for_each(|(s, v)| println!(
-            "{s:20}: {d:12?} [{n:6}]",
-            d = v.iter().sum::<Duration>() / v.len() as u32,
-            n = v.len()
-        ))
+#[cfg(feature = "disable")]
+#[macro_export]
+macro_rules! span {
+    ($span:ident) => {
+        $crate::span!($span, stringify!($span))
+    };
+    ($span:ident, $name:expr) => {
+        #[allow(unused)]
+        let $span = ();
+    };
 }
 
 #[cfg(test)]
