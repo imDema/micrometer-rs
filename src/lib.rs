@@ -16,12 +16,29 @@ pub fn global() -> &'static Registry {
     &GLOBAL_REGISTRY
 }
 
-pub fn summary() {
-    global().stats().into_iter().for_each(|(s, q)| {
+pub fn summary_grouped() {
+    let mut v: Vec<_> = global().stats_grouped().into_iter().collect();
+    v.sort_unstable_by_key(|(name, _)| name.clone());
+    v.into_iter().for_each(|(s, q)| {
         println!(
             "{s:20}: {mean:10?}({std:10?}) {tot:12?} [{n:6}]({copies:2})",
             mean = q.mean,
-            std = Duration::from_secs_f32(q.var.as_secs_f32().sqrt()),
+            std = Duration::from_secs_f64(q.var.sqrt()),
+            tot = q.sum,
+            n = q.count,
+            copies = q.copies,
+        )
+    })
+}
+
+pub fn summary() {
+    let mut v: Vec<_> = global().stats().into_iter().collect();
+    v.sort_by_key(|(name, _)| name.clone());
+    v.into_iter().for_each(|(s, q)| {
+        println!(
+            "{s:20}: {mean:10?}({std:10?}) {tot:12?} [{n:6}]({copies:2})",
+            mean = q.mean,
+            std = Duration::from_secs_f64(q.var.sqrt()),
             tot = q.sum,
             n = q.count,
             copies = q.copies,
@@ -74,8 +91,8 @@ impl Registry {
             })
     }
 
-    pub fn stats(&self) -> HashMap<String, Stats> {
-        #[derive(Default)]
+    pub fn stats_grouped(&self) -> HashMap<String, Stats> {
+        #[derive(Default, Debug)]
         struct Part {
             copies: usize,
             count: usize,
@@ -125,7 +142,7 @@ impl Registry {
                     let s = r.ns as f64 / 1_000_000_000.;
                     let c = r.count as f64;
                     let d = (s / c) - mean;
-                    
+
                     acc + (d * d * c)
                 });
 
@@ -142,7 +159,40 @@ impl Registry {
                         count: part.count,
                         sum: part.sum,
                         mean: part.sum / part.count as u32,
-                        var: Duration::from_secs_f64(part.sqsum / part.count as f64),
+                        var: part.sqsum / (part.count - 1).max(1) as f64,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn stats(&self) -> Vec<(String, Stats)> {
+        self.trackers
+            .lock()
+            .iter()
+            .map(|t| {
+                let mut buf = t.buf.0.lock();
+                buf.consolidate();
+                let (sum, count): (Duration, usize) =
+                    buf.vec.iter().fold(Default::default(), |(sum, count), r| {
+                        (sum + Duration::from_nanos(r.ns), count + r.count as usize)
+                    });
+                let mean = (sum / count as u32).as_secs_f64();
+                let sqsum = buf.vec.iter().fold(0., |acc, r| {
+                    let s = r.ns as f64 / 1_000_000_000.;
+                    let c = r.count as f64;
+                    let d = (s / c) - mean;
+
+                    acc + (d * d * c)
+                });
+                (
+                    t.name.to_owned(),
+                    Stats {
+                        copies: 1,
+                        count,
+                        sum,
+                        mean: sum / count as u32,
+                        var: sqsum / (count - 1).max(1) as f64,
                     },
                 )
             })
@@ -297,7 +347,7 @@ pub struct Stats {
     pub count: usize,
     pub sum: Duration,
     pub mean: Duration,
-    pub var: Duration,
+    pub var: f64,
 }
 
 #[cfg(not(feature = "disable"))]
@@ -310,12 +360,21 @@ macro_rules! span {
         #[allow(unused)]
         let $span = {
             use $crate::TrackPoint;
-
             static TRACK_POINT: TrackPoint = TrackPoint::new();
-
             TRACK_POINT.get_or_init($name).span()
         };
     };
+    ($e:expr) => {{
+        #[allow(unused)]
+        let __span = {
+            use $crate::TrackPoint;
+            static TRACK_POINT: TrackPoint = TrackPoint::new();
+            TRACK_POINT
+                .get_or_init(concat!(module_path!(), ":", line!()))
+                .span()
+        };
+        $e
+    }};
 }
 
 #[cfg(feature = "disable")]
@@ -327,6 +386,9 @@ macro_rules! span {
     ($span:ident, $name:expr) => {
         #[allow(unused)]
         let $span = ();
+    };
+    ($e:expr) => {
+        $e
     };
 }
 
@@ -358,5 +420,7 @@ mod tests {
         drop(full);
 
         summary();
+        println!();
+        summary_grouped();
     }
 }
