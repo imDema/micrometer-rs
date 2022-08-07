@@ -14,6 +14,10 @@ pub struct Registry {
     trackers: Mutex<Vec<Track>>,
 }
 
+pub fn global() -> &'static Registry {
+    &GLOBAL_REGISTRY
+}
+
 impl Registry {
     pub fn register(&self, t: &Track) {
         self.trackers.lock().push(t.clone());
@@ -55,10 +59,6 @@ impl Registry {
                 (n, len, v.into_iter().sum::<Duration>() / len as u32)
             })
             .collect()
-    }
-
-    pub fn global() -> &'static Self {
-        &GLOBAL_REGISTRY
     }
 }
 
@@ -127,7 +127,7 @@ macro_rules! span {
                 let name = $name;
                 let t = Track { buf, name };
 
-                Registry::global().register(&t);
+                global().register(&t);
 
                 t
             });
@@ -135,6 +135,17 @@ macro_rules! span {
             t.span()
         };
     };
+}
+
+pub fn summary() {
+    global()
+        .get_raw_merged()
+        .into_iter()
+        .for_each(|(s, v)| println!(
+            "{s:20}: {d:12?} [{n:6}]",
+            d = v.iter().sum::<Duration>() / v.len() as u32,
+            n = v.len()
+        ))
 }
 
 #[cfg(test)]
@@ -164,7 +175,6 @@ mod tests {
 
         drop(full);
 
-        println!("{:#?}", Registry::global().get_raw());
-        println!("{:#?}", Registry::global().get_cnt_avg());
+        summary();
     }
 }
