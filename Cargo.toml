@@ -2,6 +2,7 @@
 name = "spanner"
 version = "0.1.0"
 edition = "2021"
+authors = ["Luca De Martini <luca.de.martini@protonmail.com>"]
 
 [features]
 default = ["perforation"]

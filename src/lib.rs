@@ -9,6 +9,9 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use thread_local::ThreadLocal;
 
+pub const BUFFER_INIT_BYTES: usize = 4 << 10; // 4kiB
+pub const PERFORATION_STEP: usize = 256;
+
 static GLOBAL_REGISTRY: Lazy<Registry> = Lazy::new(|| Registry::default());
 
 #[inline]
@@ -208,7 +211,7 @@ pub struct Record {
 
 impl Record {
     #[inline]
-    pub fn avg(&self) -> Duration {
+    pub fn mean(&self) -> Duration {
         Duration::from_nanos(self.ns / self.count as u64)
     }
 }
@@ -222,8 +225,9 @@ struct RecordBufInner {
 
 impl RecordBufInner {
     #[cfg(feature = "perforation")]
+    #[inline]
     fn update(&mut self, d: Duration) {
-        let q = self.vec.len() as u32 / 1024;
+        let q = self.vec.len() / PERFORATION_STEP;
         match q {
             0 => self.vec.push(Record {
                 ns: d.as_nanos() as u64,
@@ -240,6 +244,7 @@ impl RecordBufInner {
     }
 
     #[cfg(not(feature = "perforation"))]
+    #[inline]
     fn update(&mut self, d: Duration) {
         self.vec.push(Record {
             ns: d.as_nanos() as u64,
@@ -247,6 +252,7 @@ impl RecordBufInner {
         });
     }
 
+    #[inline]
     fn consolidate(&mut self) {
         if self.cur.count > 0 {
             self.vec
@@ -269,7 +275,7 @@ impl Default for RecordBuf {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(RecordBufInner {
             cur: Default::default(),
-            vec: Vec::with_capacity((4 << 10) / std::mem::size_of::<Record>()),
+            vec: Vec::with_capacity(BUFFER_INIT_BYTES / std::mem::size_of::<Record>()),
         })))
     }
 }
@@ -312,8 +318,8 @@ impl Track {
         Span::new(self)
     }
 
-    #[inline]
     #[cfg(feature = "disable")]
+    #[inline]
     pub fn span(&self) -> () {
         ()
     }
@@ -330,6 +336,8 @@ pub struct Span<'a> {
 }
 
 impl<'a> Span<'a> {
+    #[cfg(not(feature = "disable"))]
+    #[inline]
     fn new(owner: &'a Track) -> Self {
         let start = Instant::now();
         Self { start, owner }
@@ -337,6 +345,7 @@ impl<'a> Span<'a> {
 }
 
 impl Drop for Span<'_> {
+    #[inline]
     fn drop(&mut self) {
         self.owner.record(self.start.elapsed());
     }
@@ -381,7 +390,8 @@ macro_rules! span {
 #[macro_export]
 macro_rules! span {
     ($span:ident) => {
-        $crate::span!($span, stringify!($span))
+        #[allow(unused)]
+        let $span = ();
     };
     ($span:ident, $name:expr) => {
         #[allow(unused)]
