@@ -24,7 +24,7 @@ pub fn summary_grouped() {
     v.sort_unstable_by_key(|(name, _)| name.clone());
     v.into_iter().for_each(|(s, q)| {
         println!(
-            "{s:20}: {mean:10?}({std:10?}) {tot:12?} [{n:6}]({copies:2})",
+            "{s:38}: {mean:12?}({std:12?}) {tot:12?} [{n:6}]({copies:2})",
             mean = q.mean,
             std = Duration::from_secs_f64(q.var.sqrt()),
             tot = q.sum,
@@ -119,14 +119,16 @@ impl Registry {
             .map(|t| (t.name.into(), t.buf.0.lock()))
             .fold(HashMap::new(), |mut h, (name, mut buf)| {
                 buf.consolidate();
-                let mut part = buf.vec.iter().fold(Part::default(), |mut part, r| {
-                    part.count += r.count as usize;
-                    part.sum += Duration::from_nanos(r.ns);
-                    part
-                });
-                part.copies = 1;
+                if buf.vec.len() > 0 {
+                    let mut part = buf.vec.iter().fold(Part::default(), |mut part, r| {
+                        part.count += r.count as usize;
+                        part.sum += Duration::from_nanos(r.ns);
+                        part
+                    });
+                    part.copies = 1;
 
-                *h.entry(name).or_default() += part;
+                    *h.entry(name).or_default() += part;
+                }
                 h
             });
 
@@ -136,20 +138,22 @@ impl Registry {
             .iter()
             .map(|t| (t.name.into(), t.buf.0.lock()))
             .fold(map, |mut h, (name, buf)| {
-                let mean = h
-                    .get(name)
-                    .map(|p| p.sum / p.count as u32)
-                    .unwrap()
-                    .as_secs_f64();
-                let sqsum = buf.vec.iter().fold(0., |acc, r| {
-                    let s = r.ns as f64 / 1_000_000_000.;
-                    let c = r.count as f64;
-                    let d = (s / c) - mean;
+                if buf.vec.len() > 0 {
+                    let mean = h
+                        .get(name)
+                        .map(|p| p.sum / p.count as u32)
+                        .unwrap()
+                        .as_secs_f64();
+                    let sqsum = buf.vec.iter().fold(0., |acc, r| {
+                        let s = r.ns as f64 / 1_000_000_000.;
+                        let c = r.count as f64;
+                        let d = (s / c) - mean;
 
-                    acc + (d * d * c)
-                });
+                        acc + (d * d * c)
+                    });
 
-                h.get_mut(name).unwrap().sqsum += sqsum;
+                    h.get_mut(name).unwrap().sqsum += sqsum;
+                }
                 h
             });
 
@@ -362,6 +366,12 @@ pub struct Stats {
 #[cfg(not(feature = "disable"))]
 #[macro_export]
 macro_rules! span {
+    () => {
+        $crate::span!(
+            __span,
+            concat!(module_path!(), ":", line!(), ":", column!())
+        )
+    };
     ($span:ident) => {
         $crate::span!($span, stringify!($span))
     };
@@ -379,8 +389,17 @@ macro_rules! span {
             use $crate::TrackPoint;
             static TRACK_POINT: TrackPoint = TrackPoint::new();
             TRACK_POINT
-                .get_or_init(concat!(module_path!(), ":", line!()))
+                .get_or_init(concat!(module_path!(), ":", line!(), ":", column!()))
                 .span()
+        };
+        $e
+    }};
+    ($e:expr, $name:expr) => {{
+        #[allow(unused)]
+        let __span = {
+            use $crate::TrackPoint;
+            static TRACK_POINT: TrackPoint = TrackPoint::new();
+            TRACK_POINT.get_or_init($name).span()
         };
         $e
     }};
@@ -389,17 +408,21 @@ macro_rules! span {
 #[cfg(feature = "disable")]
 #[macro_export]
 macro_rules! span {
+    () => {()};
     ($span:ident) => {
         #[allow(unused)]
         let $span = ();
     };
-    ($span:ident, $name:expr) => {
+    ($span:ident, $name:exprq) => {
         #[allow(unused)]
         let $span = ();
     };
     ($e:expr) => {
         $e
     };
+    ($e:expr, $name:expr) => {{
+        $e
+    }};
 }
 
 #[cfg(test)]
