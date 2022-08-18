@@ -19,6 +19,7 @@ pub fn global() -> &'static Registry {
     &GLOBAL_REGISTRY
 }
 
+#[cfg(feature = "enable")]
 pub fn summary_grouped() {
     let mut v: Vec<_> = global().stats_grouped().into_iter().collect();
     v.sort_unstable_by_key(|(name, _)| name.clone());
@@ -34,6 +35,7 @@ pub fn summary_grouped() {
     })
 }
 
+#[cfg(feature = "enable")]
 pub fn summary() {
     let mut v: Vec<_> = global().stats().into_iter().collect();
     v.sort_by_key(|(name, _)| name.clone());
@@ -47,6 +49,16 @@ pub fn summary() {
             copies = q.copies,
         )
     })
+}
+
+#[cfg(not(feature = "enable"))]
+pub fn summary() {
+    println!("spanner disabled, add 'enable' feature to gather statistics.");
+}
+
+#[cfg(not(feature = "enable"))]
+pub fn summary_grouped() {
+    println!("spanner disabled, add 'enable' feature to gather statistics.");
 }
 
 #[derive(Default)]
@@ -316,13 +328,13 @@ impl Track {
     }
 
     // Get a span guard, measures time from its creation to when it's dropped
-    #[cfg(not(feature = "disable"))]
+    #[cfg(feature = "enable")]
     #[inline]
     pub fn span(&self) -> Span<'_> {
         Span::new(self)
     }
 
-    #[cfg(feature = "disable")]
+    #[cfg(not(feature = "enable"))]
     #[inline]
     pub fn span(&self) -> () {
         ()
@@ -340,7 +352,7 @@ pub struct Span<'a> {
 }
 
 impl<'a> Span<'a> {
-    #[cfg(not(feature = "disable"))]
+    #[cfg(feature = "enable")]
     #[inline]
     fn new(owner: &'a Track) -> Self {
         let start = Instant::now();
@@ -363,7 +375,7 @@ pub struct Stats {
     pub var: f64,
 }
 
-#[cfg(not(feature = "disable"))]
+#[cfg(feature = "enable")]
 #[macro_export]
 macro_rules! span {
     () => {
@@ -405,7 +417,7 @@ macro_rules! span {
     }};
 }
 
-#[cfg(feature = "disable")]
+#[cfg(not(feature = "enable"))]
 #[macro_export]
 macro_rules! span {
     () => {()};
@@ -413,7 +425,7 @@ macro_rules! span {
         #[allow(unused)]
         let $span = ();
     };
-    ($span:ident, $name:exprq) => {
+    ($span:ident, $name:expr) => {
         #[allow(unused)]
         let $span = ();
     };

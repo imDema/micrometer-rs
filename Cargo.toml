@@ -6,7 +6,7 @@ authors = ["Luca De Martini <luca.de.martini@protonmail.com>"]
 
 [features]
 default = ["perforation"]
-disable = []
+enable = []
 perforation = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
