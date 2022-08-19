@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     ops::AddAssign,
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,8 +10,8 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use thread_local::ThreadLocal;
 
-pub const BUFFER_INIT_BYTES: usize = 4 << 10; // 4kiB
-pub const PERFORATION_STEP: usize = 256;
+pub const BUFFER_INIT_BYTES: usize = 8 << 10; // 8kiB
+pub const PERFORATION_STEP: usize = 1024;
 
 static GLOBAL_REGISTRY: Lazy<Registry> = Lazy::new(|| Registry::default());
 
@@ -51,6 +52,74 @@ pub fn summary() {
     })
 }
 
+#[cfg(feature = "enable")]
+pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::{Write, BufWriter};
+
+    let mut f = File::create(path)?;
+    let mut w = BufWriter::new(&mut f);
+    let mut threads: HashMap<_, usize> = HashMap::new();
+
+    writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\"")?;
+
+    for (name, records) in global().drain_raw() {
+        let t = threads.entry(name.clone()).or_default();
+        let thread = *t;
+        *t += 1;
+        for (i, Record { ns, count }) in records.into_iter().enumerate() {
+            if !count.is_power_of_two() {
+                continue;
+            }
+            let duration = Duration::from_nanos(ns) / count;
+            let seconds = duration.as_secs_f64();
+            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{i}\",\"{count}\",\"{seconds:e}\"")?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "enable")]
+pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::{Write, BufWriter};
+
+    let mut f = File::create(path)?;
+    let mut w = BufWriter::new(&mut f);
+    let mut threads: HashMap<_, usize> = HashMap::new();
+
+    writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\"")?;
+
+    for (name, records) in global().drain_raw() {
+        if records.is_empty() {
+            continue;
+        }
+        let t = threads.entry(name.clone()).or_default();
+        let thread = *t;
+        *t += 1;
+
+        let width = records.get(records.len()-2).unwrap_or_else(|| &records[records.len()-1]).count;
+
+        let mut r = Record::default();
+        for i in (0..records.len()).rev() {
+            if i == records.len() - 1 && records[i].count != width {
+                continue;
+            }
+            r += records[i];
+            if r.count == width {
+                let count = r.count;
+                let duration = Duration::from_nanos(r.ns) / count;
+                let seconds = duration.as_secs_f64();
+                writeln!(&mut w, "\"{name}\",\"{thread}\",\"{i}\",\"{count}\",\"{seconds:e}\"")?;
+                r = Default::default();
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(not(feature = "enable"))]
 pub fn summary() {
     println!("spanner disabled, add 'enable' feature to gather statistics.");
@@ -59,6 +128,20 @@ pub fn summary() {
 #[cfg(not(feature = "enable"))]
 pub fn summary_grouped() {
     println!("spanner disabled, add 'enable' feature to gather statistics.");
+}
+
+#[cfg(not(feature = "enable"))]
+pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
+    let _ = path;
+    println!("spanner disabled, add 'enable' feature to gather statistics.");
+    Ok(())
+}
+
+#[cfg(not(feature = "enable"))]
+pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
+    let _ = path;
+    println!("spanner disabled, add 'enable' feature to gather statistics.");
+    Ok(())
 }
 
 #[derive(Default)]
@@ -219,7 +302,7 @@ impl Registry {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Record {
     pub ns: u64,
     pub count: u32,
@@ -229,6 +312,13 @@ impl Record {
     #[inline]
     pub fn mean(&self) -> Duration {
         Duration::from_nanos(self.ns / self.count as u64)
+    }
+}
+
+impl AddAssign<Record> for Record {
+    fn add_assign(&mut self, rhs: Record) {
+        self.ns += rhs.ns;
+        self.count += rhs.count;
     }
 }
 
