@@ -25,7 +25,7 @@ pub fn summary_grouped() {
     let mut v: Vec<_> = global().stats_grouped().into_iter().collect();
     v.sort_unstable_by_key(|(name, _)| name.clone());
     v.into_iter().for_each(|(s, q)| {
-        println!(
+        eprintln!(
             "{s:38}: {mean:12?}({std:12?}) {tot:12?} [{n:6}]({copies:2})",
             mean = q.mean,
             std = Duration::from_secs_f64(q.var.sqrt()),
@@ -41,7 +41,7 @@ pub fn summary() {
     let mut v: Vec<_> = global().stats().into_iter().collect();
     v.sort_by_key(|(name, _)| name.clone());
     v.into_iter().for_each(|(s, q)| {
-        println!(
+        eprintln!(
             "{s:20}: {mean:10?}({std:10?}) {tot:12?} [{n:6}]({copies:2})",
             mean = q.mean,
             std = Duration::from_secs_f64(q.var.sqrt()),
@@ -67,13 +67,15 @@ pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
         let t = threads.entry(name.clone()).or_default();
         let thread = *t;
         *t += 1;
-        for (i, Record { ns, count }) in records.into_iter().enumerate() {
+        let mut idx = 0;
+        for Record { ns, count } in records {
             if !count.is_power_of_two() {
                 continue;
             }
             let duration = Duration::from_nanos(ns) / count;
             let seconds = duration.as_secs_f64();
-            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{i}\",\"{count}\",\"{seconds:e}\"")?;
+            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{idx}\",\"{count}\",\"{seconds:.e}\"")?;
+            idx += count as usize;
         }
     }
 
@@ -102,18 +104,28 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
         let width = records.get(records.len()-2).unwrap_or_else(|| &records[records.len()-1]).count;
 
         let mut r = Record::default();
+        let mut rev_vec = Vec::new();
         for i in (0..records.len()).rev() {
             if i == records.len() - 1 && records[i].count != width {
                 continue;
             }
+
             r += records[i];
+
             if r.count == width {
-                let count = r.count;
-                let duration = Duration::from_nanos(r.ns) / count;
-                let seconds = duration.as_secs_f64();
-                writeln!(&mut w, "\"{name}\",\"{thread}\",\"{i}\",\"{count}\",\"{seconds:e}\"")?;
+                rev_vec.push(r);
+                r = Default::default();
+            } else if r.count > width {
+                eprintln!("WARN: spanner illegal state {} ({}) {:+}. Resetting current", r.count, width, r.count - width);
                 r = Default::default();
             }
+        }
+        for (i, r) in rev_vec.into_iter().rev().enumerate() {
+            let count = r.count;
+            let duration = Duration::from_nanos(r.ns) / count;
+            let seconds = duration.as_secs_f64();
+            let index = i * width as usize;
+            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{index}\",\"{count}\",\"{seconds:e}\"")?;
         }
     }
 
@@ -122,25 +134,25 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
 
 #[cfg(not(feature = "enable"))]
 pub fn summary() {
-    println!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
 }
 
 #[cfg(not(feature = "enable"))]
 pub fn summary_grouped() {
-    println!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
 }
 
 #[cfg(not(feature = "enable"))]
 pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
     let _ = path;
-    println!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
     Ok(())
 }
 
 #[cfg(not(feature = "enable"))]
 pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
     let _ = path;
-    println!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
     Ok(())
 }
 
