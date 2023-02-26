@@ -61,20 +61,24 @@ pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
     let mut w = BufWriter::new(&mut f);
     let mut threads: HashMap<_, usize> = HashMap::new();
 
-    writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\"")?;
+    let mut data = global().drain_raw();
+    data.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (name, records) in global().drain_raw() {
+    writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\",\"end\"")?;
+
+    for (name, records) in data {
         let t = threads.entry(name.clone()).or_default();
         let thread = *t;
         *t += 1;
         let mut idx = 0;
-        for Record { ns, count } in records {
+        for Record { ns, count, end} in records {
             if !count.is_power_of_two() {
                 continue;
             }
             let duration = Duration::from_nanos(ns) / count;
+            let end = Duration::from_nanos(end).as_secs_f64();
             let seconds = duration.as_secs_f64();
-            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{idx}\",\"{count}\",\"{seconds:.e}\"")?;
+            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{idx}\",\"{count}\",\"{seconds:.e}\",\"{end:.e}\"")?;
             idx += count as usize;
         }
     }
@@ -91,9 +95,12 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
     let mut w = BufWriter::new(&mut f);
     let mut threads: HashMap<_, usize> = HashMap::new();
 
+    let mut data = global().drain_raw();
+    data.sort_by(|a, b| a.0.cmp(&b.0));
+
     writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\"")?;
 
-    for (name, records) in global().drain_raw() {
+    for (name, records) in data {
         if records.is_empty() {
             continue;
         }
@@ -116,7 +123,7 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
                 rev_vec.push(r);
                 r = Default::default();
             } else if r.count > width {
-                eprintln!("WARN: spanner illegal state {} ({}) {:+}. Resetting current", r.count, width, r.count - width);
+                eprintln!("WARN: micrometer illegal state {} ({}) {:+}. Resetting current", r.count, width, r.count - width);
                 r = Default::default();
             }
         }
@@ -134,25 +141,25 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
 
 #[cfg(not(feature = "enable"))]
 pub fn summary() {
-    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("micrometer disabled, add 'enable' feature to gather statistics.");
 }
 
 #[cfg(not(feature = "enable"))]
 pub fn summary_grouped() {
-    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("micrometer disabled, add 'enable' feature to gather statistics.");
 }
 
 #[cfg(not(feature = "enable"))]
 pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
     let _ = path;
-    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("micrometer disabled, add 'enable' feature to gather statistics.");
     Ok(())
 }
 
 #[cfg(not(feature = "enable"))]
 pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
     let _ = path;
-    eprintln!("spanner disabled, add 'enable' feature to gather statistics.");
+    eprintln!("micrometer disabled, add 'enable' feature to gather statistics.");
     Ok(())
 }
 
@@ -314,10 +321,15 @@ impl Registry {
     }
 }
 
+#[cfg(feature = "instant")]
+static START: Lazy<Instant> = Lazy::new(Instant::now);
+
 #[derive(Default, Clone, Copy)]
 pub struct Record {
     pub ns: u64,
     pub count: u32,
+    #[cfg(feature = "instant")]
+    pub end: u64,
 }
 
 impl Record {
@@ -331,6 +343,7 @@ impl AddAssign<Record> for Record {
     fn add_assign(&mut self, rhs: Record) {
         self.ns += rhs.ns;
         self.count += rhs.count;
+        self.end = self.end.max(rhs.end);
     }
 }
 
@@ -350,11 +363,13 @@ impl RecordBufInner {
             0 => self.vec.push(Record {
                 ns: d.as_nanos() as u64,
                 count: 1,
+                end: START.elapsed().as_nanos() as u64,
             }),
             q => {
                 self.cur.count += 1;
                 self.cur.ns += d.as_nanos() as u64;
                 if self.cur.count == 1 << q {
+                    self.cur.end = START.elapsed().as_nanos() as u64;
                     self.consolidate();
                 }
             }
