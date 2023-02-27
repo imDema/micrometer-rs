@@ -1,8 +1,11 @@
 [package]
 name = "micrometer"
+description = "Profiling for fast, high frequency events in multithreaded applications with low overhead"
 version = "0.1.0"
 edition = "2021"
 authors = ["Luca De Martini <luca.de.martini@protonmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/imDema/micrometer-rs"
 
 [features]
 default = ["perforation", "instant"]

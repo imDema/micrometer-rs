@@ -13,7 +13,7 @@ use thread_local::ThreadLocal;
 pub const BUFFER_INIT_BYTES: usize = 8 << 10; // 8kiB
 pub const PERFORATION_STEP: usize = 1024;
 
-static GLOBAL_REGISTRY: Lazy<Registry> = Lazy::new(|| Registry::default());
+static GLOBAL_REGISTRY: Lazy<Registry> = Lazy::new(Registry::default);
 
 #[inline]
 pub fn global() -> &'static Registry {
@@ -55,7 +55,7 @@ pub fn summary() {
 #[cfg(feature = "enable")]
 pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
     use std::fs::File;
-    use std::io::{Write, BufWriter};
+    use std::io::{BufWriter, Write};
 
     let mut f = File::create(path)?;
     let mut w = BufWriter::new(&mut f);
@@ -64,21 +64,27 @@ pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
     let mut data = global().drain_raw();
     data.sort_by(|a, b| a.0.cmp(&b.0));
 
-    writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\",\"end\"")?;
+    writeln!(
+        &mut w,
+        "\"name\",\"thread\",\"index\",\"count\",\"time\",\"end\""
+    )?;
 
     for (name, records) in data {
         let t = threads.entry(name.clone()).or_default();
         let thread = *t;
         *t += 1;
         let mut idx = 0;
-        for Record { ns, count, end} in records {
+        for Record { ns, count, end } in records {
             if !count.is_power_of_two() {
                 continue;
             }
             let duration = Duration::from_nanos(ns) / count;
             let end = Duration::from_nanos(end).as_secs_f64();
             let seconds = duration.as_secs_f64();
-            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{idx}\",\"{count}\",\"{seconds:.e}\",\"{end:.e}\"")?;
+            writeln!(
+                &mut w,
+                "\"{name}\",\"{thread}\",\"{idx}\",\"{count}\",\"{seconds:e}\",\"{end:e}\""
+            )?;
             idx += count as usize;
         }
     }
@@ -89,7 +95,7 @@ pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
 #[cfg(feature = "enable")]
 pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
     use std::fs::File;
-    use std::io::{Write, BufWriter};
+    use std::io::{BufWriter, Write};
 
     let mut f = File::create(path)?;
     let mut w = BufWriter::new(&mut f);
@@ -108,7 +114,10 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
         let thread = *t;
         *t += 1;
 
-        let width = records.get(records.len()-2).unwrap_or_else(|| &records[records.len()-1]).count;
+        let width = records
+            .get(records.len() - 2)
+            .unwrap_or_else(|| &records[records.len() - 1])
+            .count;
 
         let mut r = Record::default();
         let mut rev_vec = Vec::new();
@@ -123,7 +132,12 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
                 rev_vec.push(r);
                 r = Default::default();
             } else if r.count > width {
-                eprintln!("WARN: micrometer illegal state {} ({}) {:+}. Resetting current", r.count, width, r.count - width);
+                eprintln!(
+                    "WARN: micrometer illegal state {} ({}) {:+}. Resetting current",
+                    r.count,
+                    width,
+                    r.count - width
+                );
                 r = Default::default();
             }
         }
@@ -132,7 +146,10 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
             let duration = Duration::from_nanos(r.ns) / count;
             let seconds = duration.as_secs_f64();
             let index = i * width as usize;
-            writeln!(&mut w, "\"{name}\",\"{thread}\",\"{index}\",\"{count}\",\"{seconds:e}\"")?;
+            writeln!(
+                &mut w,
+                "\"{name}\",\"{thread}\",\"{index}\",\"{count}\",\"{seconds:e}\""
+            )?;
         }
     }
 
@@ -189,7 +206,7 @@ impl Registry {
             .map(|t| {
                 let mut g = t.buf.0.lock();
                 g.consolidate();
-                (t.name.into(), std::mem::replace(&mut g.vec, Vec::new()))
+                (t.name.into(), std::mem::take(&mut g.vec))
             })
             .collect()
     }
@@ -203,7 +220,7 @@ impl Registry {
                 g.consolidate();
                 h.entry(name)
                     .or_default()
-                    .extend(std::mem::replace(&mut g.vec, Vec::new()).drain(..));
+                    .append(&mut std::mem::take(&mut g.vec));
                 h
             })
     }
@@ -233,7 +250,7 @@ impl Registry {
             .map(|t| (t.name.into(), t.buf.0.lock()))
             .fold(HashMap::new(), |mut h, (name, mut buf)| {
                 buf.consolidate();
-                if buf.vec.len() > 0 {
+                if !buf.vec.is_empty() {
                     let mut part = buf.vec.iter().fold(Part::default(), |mut part, r| {
                         part.count += r.count as usize;
                         part.sum += Duration::from_nanos(r.ns);
@@ -250,9 +267,9 @@ impl Registry {
             .trackers
             .lock()
             .iter()
-            .map(|t| (t.name.into(), t.buf.0.lock()))
+            .map(|t| (t.name, t.buf.0.lock()))
             .fold(map, |mut h, (name, buf)| {
-                if buf.vec.len() > 0 {
+                if !buf.vec.is_empty() {
                     let mean = h
                         .get(name)
                         .map(|p| p.sum / p.count as u32)
@@ -388,8 +405,7 @@ impl RecordBufInner {
     #[inline]
     fn consolidate(&mut self) {
         if self.cur.count > 0 {
-            self.vec
-                .push(std::mem::replace(&mut self.cur, Default::default()))
+            self.vec.push(std::mem::take(&mut self.cur))
         }
     }
 }
@@ -413,12 +429,17 @@ impl Default for RecordBuf {
     }
 }
 
+pub struct DisabledSpan;
+impl Drop for DisabledSpan {
+    fn drop(&mut self) {}
+}
+
 pub struct TrackPoint(Lazy<ThreadLocal<Track>>);
 
 impl TrackPoint {
     #[inline]
-    pub const fn new() -> Self {
-        Self(Lazy::new(|| ThreadLocal::new()))
+    pub const fn new_thread_local() -> Self {
+        Self(Lazy::new(ThreadLocal::new))
     }
 
     #[inline]
@@ -453,8 +474,8 @@ impl Track {
 
     #[cfg(not(feature = "enable"))]
     #[inline]
-    pub fn span(&self) -> () {
-        ()
+    pub fn span(&self) -> DisabledSpan {
+        DisabledSpan
     }
 
     #[inline]
@@ -537,14 +558,16 @@ macro_rules! span {
 #[cfg(not(feature = "enable"))]
 #[macro_export]
 macro_rules! span {
-    () => {()};
+    () => {
+        $crate::DisabledSpan
+    };
     ($span:ident) => {
         #[allow(unused)]
-        let $span = ();
+        let $span = $crate::DisabledSpan;
     };
     ($span:ident, $name:expr) => {
         #[allow(unused)]
-        let $span = ();
+        let $span = $crate::DisabledSpan;
     };
     ($e:expr) => {
         $e
