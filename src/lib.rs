@@ -26,7 +26,7 @@ pub fn summary_grouped() {
     v.sort_unstable_by_key(|(name, _)| name.clone());
     v.into_iter().for_each(|(s, q)| {
         eprintln!(
-            "{s:38}: {mean:12?}({std:12?}) {tot:12?} [{n:6}]({copies:2})",
+            "{s:36}: {mean:12?}({std:12?}) {tot:12?} [{n:6}]({copies:2})",
             mean = q.mean,
             std = Duration::from_secs_f64(q.var.sqrt()),
             tot = q.sum,
@@ -42,7 +42,7 @@ pub fn summary() {
     v.sort_by_key(|(name, _)| name.clone());
     v.into_iter().for_each(|(s, q)| {
         eprintln!(
-            "{s:20}: {mean:10?}({std:10?}) {tot:12?} [{n:6}]({copies:2})",
+            "{s:36}: {mean:12?}({std:12?}) {tot:12?} [{n:6}]({copies:2})",
             mean = q.mean,
             std = Duration::from_secs_f64(q.var.sqrt()),
             tot = q.sum,
@@ -66,7 +66,7 @@ pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
 
     writeln!(
         &mut w,
-        "\"name\",\"thread\",\"index\",\"count\",\"time\",\"end\""
+        "\"index\",\"name\",\"thread\",\"count\",\"time\",\"end\""
     )?;
 
     for (name, records) in data {
@@ -83,7 +83,48 @@ pub fn save_csv(path: impl AsRef<Path>) -> std::io::Result<()> {
             let seconds = duration.as_secs_f64();
             writeln!(
                 &mut w,
-                "\"{name}\",\"{thread}\",\"{idx}\",\"{count}\",\"{seconds:e}\",\"{end:e}\""
+                "\"{idx}\",\"{name}\",\"{thread}\",\"{count}\",\"{seconds:e}\",\"{end:e}\""
+            )?;
+            idx += count as usize;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "enable")]
+pub fn append_csv(path: impl AsRef<Path>, experiment: &str) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
+
+    let mut f = File::options().append(true).create(true).open(path)?;
+    if f.metadata()?.len() == 0 {
+        writeln!(
+            &mut f,
+            "\"index\",\"experiment\",\"name\",\"thread\",\"count\",\"time\",\"end\""
+        )?;
+    }
+    let mut w = BufWriter::new(&mut f);
+    let mut threads: HashMap<_, usize> = HashMap::new();
+
+    let mut data = global().drain_raw();
+    data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, records) in data {
+        let t = threads.entry(name.clone()).or_default();
+        let thread = *t;
+        *t += 1;
+        let mut idx = 0;
+        for Record { ns, count, end } in records {
+            if !count.is_power_of_two() {
+                continue;
+            }
+            let duration = Duration::from_nanos(ns) / count;
+            let end = Duration::from_nanos(end).as_secs_f64();
+            let seconds = duration.as_secs_f64();
+            writeln!(
+                &mut w,
+                "\"{idx}\",\"{experiment}\",\"{name}\",\"{thread}\",\"{count}\",\"{seconds:e}\",\"{end:e}\""
             )?;
             idx += count as usize;
         }
@@ -104,7 +145,7 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
     let mut data = global().drain_raw();
     data.sort_by(|a, b| a.0.cmp(&b.0));
 
-    writeln!(&mut w, "\"name\",\"thread\",\"index\",\"count\",\"time\"")?;
+    writeln!(&mut w, "\"index\",\"name\",\"thread\",\"count\",\"time\"")?;
 
     for (name, records) in data {
         if records.is_empty() {
@@ -148,7 +189,7 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
             let index = i * width as usize;
             writeln!(
                 &mut w,
-                "\"{name}\",\"{thread}\",\"{index}\",\"{count}\",\"{seconds:e}\""
+                "\"{index}\",\"{name}\",\"{thread}\",\"{count}\",\"{seconds:e}\""
             )?;
         }
     }
@@ -341,6 +382,11 @@ impl Registry {
 #[cfg(feature = "instant")]
 static START: Lazy<Instant> = Lazy::new(Instant::now);
 
+#[cfg(feature = "instant")]
+pub fn start() {
+    Lazy::force(&START);
+}
+
 #[derive(Default, Clone, Copy)]
 pub struct Record {
     pub ns: u64,
@@ -484,9 +530,11 @@ impl Track {
     }
 }
 
+#[derive(Clone)]
 pub struct Span<'a> {
     start: Instant,
     owner: &'a Track,
+    armed: bool,
 }
 
 impl<'a> Span<'a> {
@@ -494,14 +542,30 @@ impl<'a> Span<'a> {
     #[inline]
     fn new(owner: &'a Track) -> Self {
         let start = Instant::now();
-        Self { start, owner }
+        Self {
+            start,
+            owner,
+            armed: true,
+        }
+    }
+
+    #[inline]
+    pub fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    #[inline]
+    pub fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
 impl Drop for Span<'_> {
     #[inline]
     fn drop(&mut self) {
-        self.owner.record(self.start.elapsed());
+        if self.armed {
+            self.owner.record(self.start.elapsed());
+        }
     }
 }
 
