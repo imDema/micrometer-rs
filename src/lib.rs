@@ -593,7 +593,7 @@ macro_rules! span {
         #[allow(unused)]
         let $span = {
             use $crate::TrackPoint;
-            static TRACK_POINT: TrackPoint = TrackPoint::new();
+            static TRACK_POINT: TrackPoint = TrackPoint::new_thread_local();
             TRACK_POINT.get_or_init($name).span()
         };
     };
@@ -601,7 +601,7 @@ macro_rules! span {
         #[allow(unused)]
         let __span = {
             use $crate::TrackPoint;
-            static TRACK_POINT: TrackPoint = TrackPoint::new();
+            static TRACK_POINT: TrackPoint = TrackPoint::new_thread_local();
             TRACK_POINT
                 .get_or_init(concat!(module_path!(), ":", line!(), ":", column!()))
                 .span()
@@ -612,7 +612,7 @@ macro_rules! span {
         #[allow(unused)]
         let __span = {
             use $crate::TrackPoint;
-            static TRACK_POINT: TrackPoint = TrackPoint::new();
+            static TRACK_POINT: TrackPoint = TrackPoint::new_thread_local();
             TRACK_POINT.get_or_init($name).span()
         };
         $e
