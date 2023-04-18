@@ -512,16 +512,9 @@ impl Track {
     }
 
     // Get a span guard, measures time from its creation to when it's dropped
-    #[cfg(feature = "enable")]
     #[inline]
     pub fn span(&self) -> Span<'_> {
         Span::new(self)
-    }
-
-    #[cfg(not(feature = "enable"))]
-    #[inline]
-    pub fn span(&self) -> DisabledSpan {
-        DisabledSpan
     }
 
     #[inline]
@@ -531,14 +524,15 @@ impl Track {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "enable")]
 pub struct Span<'a> {
     start: Instant,
     owner: &'a Track,
     armed: bool,
 }
 
+#[cfg(feature = "enable")]
 impl<'a> Span<'a> {
-    #[cfg(feature = "enable")]
     #[inline]
     fn new(owner: &'a Track) -> Self {
         let start = Instant::now();
@@ -560,6 +554,7 @@ impl<'a> Span<'a> {
     }
 }
 
+#[cfg(feature = "enable")]
 impl Drop for Span<'_> {
     #[inline]
     fn drop(&mut self) {
@@ -567,6 +562,32 @@ impl Drop for Span<'_> {
             self.owner.record(self.start.elapsed());
         }
     }
+}
+
+#[derive(Clone, Default)]
+#[cfg(not(feature = "enable"))]
+pub struct Span<'a> {
+    owner: std::marker::PhantomData<&'a ()>,
+}
+
+#[cfg(not(feature = "enable"))]
+impl<'a> Span<'a> {
+    #[inline]
+    fn new(_owner: &'a Track) -> Self {
+        Self { owner: std::marker::PhantomData }
+    }
+
+    #[inline]
+    pub fn arm(&mut self) {}
+
+    #[inline]
+    pub fn disarm(&mut self) {}
+}
+
+#[cfg(not(feature = "enable"))]
+impl Drop for Span<'_> {
+    #[inline]
+    fn drop(&mut self) {}
 }
 
 pub struct Stats {
@@ -623,15 +644,15 @@ macro_rules! span {
 #[macro_export]
 macro_rules! span {
     () => {
-        $crate::DisabledSpan
+        $crate::Span::default()
     };
     ($span:ident) => {
         #[allow(unused)]
-        let $span = $crate::DisabledSpan;
+        let $span = $crate::Span::default();
     };
     ($span:ident, $name:expr) => {
         #[allow(unused)]
-        let $span = $crate::DisabledSpan;
+        let $span = $crate::Span::default();
     };
     ($e:expr) => {
         $e
