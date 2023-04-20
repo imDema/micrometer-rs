@@ -2,7 +2,7 @@
 # Micrometer
 Profiling for fast, high frequency events in multithreaded applications with low overhead
 
-### Important
+### Important: enabling data collection
 
 By default every measure is a no-op, to measure and consume measures, enable the `enable`
 feature. This is done to allow libs to instrument their code without runitme costs if

@@ -5,7 +5,7 @@
 
 Profiling for fast, high frequency events in multithreaded applications with low overhead
 
-### Important
+### Important: enabling data collection
 
 By default every measure is a no-op, to measure and consume measures, enable the `enable`
 feature. This is done to allow libs to instrument their code without runitme costs if
@@ -38,7 +38,7 @@ the `get_or_init` method to get the *track* for the active thread.
 
 #### Measuring the duration of a loop
 
-```
+```rs
 for _ in 0..100 {
     // Define a `TrackPoint` named "loop_duration", get (or init) the `Track` for the
     // current thread, then create a span and assign it to a new local variable called
@@ -54,7 +54,7 @@ micrometer::summary();
 
 #### Measuring the duration of a loop, threaded
 
-```
+```rs
 std::thread::scope(|s| {
     for t in 1..=4 {
         s.spawn(move || {
@@ -72,7 +72,7 @@ micrometer::summary_grouped();
 ```
 ### Measuring the duration of an expression
 
-```
+```rs
 // This works like the `dbg!` macro, allowing you to transparently wrap an expression:
 // a span is created, the expression is executed, then the span is closed and the result
 // of the expression is passed along
@@ -84,7 +84,7 @@ assert_eq!(b, 25 * 25);
 
 ### Measuring a code segment
 
-```
+```rs
 let a = 5;
 micrometer::span!(guard, "a_sq");
 let b = a * a;
