@@ -111,6 +111,7 @@ pub const BUFFER_INIT_BYTES: usize = 8 << 10; // 8kiB
 /// The first `PERFORATION_STEP` measures will be saved as is, after that,
 /// the following `PERFORATION_STEP` measures will be composed of 2 measures
 /// each, the next will be 4 each and so on
+#[cfg(feature = "perforation")]
 pub const PERFORATION_STEP: usize = {
     #[cfg(feature = "perforation-128")]
     {
@@ -671,6 +672,7 @@ impl RecordBufInner {
     fn update(&mut self, d: Duration) {
         self.vec.push(Record {
             ns: d.as_nanos() as u64,
+            end: START.elapsed().as_nanos() as u64,
             count: 1,
         });
     }
