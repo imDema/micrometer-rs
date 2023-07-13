@@ -2,7 +2,7 @@
 # Micrometer
 Profiling for fast, high frequency events in multithreaded applications with low overhead
 
-### Important: enabling data collection
+### Important
 
 By default every measure is a no-op, to measure and consume measures, enable the `enable`
 feature. This is done to allow libs to instrument their code without runitme costs if
@@ -330,6 +330,85 @@ pub fn save_csv_uniform(path: impl AsRef<Path>) -> std::io::Result<()> {
             writeln!(
                 &mut w,
                 "\"{index}\",\"{name}\",\"{thread}\",\"{count}\",\"{seconds:e}\""
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "enable"))]
+pub fn append_csv_uniform(path: impl AsRef<Path>, experiment: &str) -> std::io::Result<()> {
+    let _ = path;
+    let _ = experiment;
+    eprintln!("micrometer disabled, add 'enable' feature to gather statistics.");
+    Ok(())
+}
+
+#[cfg(feature = "enable")]
+/// Save all measurements to a csv file. Measures will be uniformed in count
+/// to the largest granularity that has been measured for each location.
+pub fn append_csv_uniform(path: impl AsRef<Path>, experiment: &str) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
+
+    let mut f = File::options().append(true).create(true).open(path)?;
+    if f.metadata()?.len() == 0 {
+        writeln!(
+            &mut f,
+            "\"index\",\"experiment\",\"name\",\"thread\",\"count\",\"time\",\"end\""
+        )?;
+    }
+    let mut w = BufWriter::new(&mut f);
+    let mut threads: HashMap<_, usize> = HashMap::new();
+
+    let mut data = global().drain_raw();
+    data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, records) in data {
+        if records.is_empty() {
+            continue;
+        }
+        let t = threads.entry(name.clone()).or_default();
+        let thread = *t;
+        *t += 1;
+
+        let width = records
+            .get(records.len().saturating_sub(2))
+            .expect("records.is_empty() checked early, will always have at least 1 element")
+            .count;
+
+        let mut r = Record::default();
+        let mut rev_vec = Vec::new();
+        for i in (0..records.len()).rev() {
+            if i == records.len() - 1 && records[i].count != width {
+                continue;
+            }
+
+            r += records[i];
+
+            if r.count == width {
+                rev_vec.push(r);
+                r = Default::default();
+            } else if r.count > width {
+                eprintln!(
+                    "WARN: micrometer illegal state {} ({}) {:+}. Resetting current",
+                    r.count,
+                    width,
+                    r.count - width
+                );
+                r = Default::default();
+            }
+        }
+        for (i, r) in rev_vec.into_iter().rev().enumerate() {
+            let count = r.count;
+            let duration = Duration::from_nanos(r.ns) / count;
+            let seconds = duration.as_secs_f64();
+            let end = Duration::from_nanos(r.end).as_secs_f64();
+            let index = i * width as usize;
+            writeln!(
+                &mut w,
+                "\"{index}\",\"{experiment}\",\"{name}\",\"{thread}\",\"{count}\",\"{seconds:e}\",\"{end:e}\""
             )?;
         }
     }
@@ -879,6 +958,16 @@ mod tests {
         let path = dir.path().join("micrometer-test.csv");
         super::append_csv(&path, "a").expect("failed to save csv");
         super::append_csv(&path, "b").expect("failed to save csv");
+    }
+
+    #[test]
+    fn append_csv_uniform() {
+        example_events();
+
+        let dir = tempfile::tempdir().expect("failed to create temp file");
+        let path = dir.path().join("micrometer-test.csv");
+        super::append_csv_uniform(&path, "a").expect("failed to save csv");
+        super::append_csv_uniform(&path, "b").expect("failed to save csv");
     }
 
     #[test]
