@@ -111,7 +111,20 @@ pub const BUFFER_INIT_BYTES: usize = 8 << 10; // 8kiB
 /// The first `PERFORATION_STEP` measures will be saved as is, after that,
 /// the following `PERFORATION_STEP` measures will be composed of 2 measures
 /// each, the next will be 4 each and so on
-pub const PERFORATION_STEP: usize = 1024;
+pub const PERFORATION_STEP: usize = {
+    #[cfg(feature = "perforation-128")]
+    {
+        128
+    }
+    #[cfg(feature = "perforation-1k")]
+    {
+        1 << 10
+    }
+    #[cfg(feature = "perforation-16k")]
+    {
+        16 << 10
+    }
+};
 
 static GLOBAL_REGISTRY: Lazy<Registry> = Lazy::new(Registry::default);
 
